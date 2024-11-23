@@ -1,37 +1,111 @@
 from matplotlib.tri import Triangulation, UniformTriRefiner
 import matplotlib.pyplot as plt
 import numpy as np
+import heapq
 
 def objective(fs, xs):
     return np.sum([f(x) for f, x in zip(fs, xs)])
 
-class BarycentricSimplexDomain:
-    def __init__(self, points, fs):
-        # points is an NxN matrix where
+class Simplex_PQNode:
+    def __init__(self, points, fs, depth=0):
+        # points is an NxN matrix (np.ndarray) where
         # rows represent points of the simplex
         # it is assumed that rows sum to 1
         self.points = points
         self.fs = fs
 
+        self.depth = depth
+
+        self._lb = None
+        self._ub = None
+        self._obj_vals = None
+    
     def upper_bound(self):
-        max_coords = np.max(self.points, axis=1)
-        return objective(self.fs, max_coords)
+        if self._ub is None:
+            max_coords = np.max(self.points, axis=1)
+            self._ub = objective(self.fs, max_coords)
+        return self._ub
 
     def lower_bound(self):
-        min_coords = np.min(self.points, axis=1)
-        return objective(self.fs, min_coords)
+        if self._lb is None:
+            min_coords = np.min(self.points, axis=1)
+            self._lb = objective(self.fs, min_coords)
+        return self._lb
 
+    def objective_values(self):
+        if self._obj_vals is None:
+            self._obj_vals = [objective(fs, point) for point in self.points]
+        return self._obj_vals
+
+    def __str__(self):
+        return f'{self.points}\n{self.lower_bound()} -- {self.upper_bound()}'
+    
+    # comparison overloads for use as priority queue nodes
+    # we want to prioritize nodes with larger lower bounds
+    def __lt__(self, other):
+        return self.depth < other.depth
+    #return self.lower_bound() > other.lower_bound()
+
+    def __eq__(self, other):
+        return self.depth == other.depth
+    #return self.lower_bound() == other.lower_bound()
+    
     # split simplex along edge with biggest difference of objective function values
     def split(self):
-        obj_values = [objective(fs, point) for point in self.points]
-        max_idx = np.argmax(obj_values)
-        min_idx = np.argmin(obj_values)
+        max_idx = np.argmax(self.objective_values())
+        min_idx = np.argmin(self.objective_values())
 
+        if min_idx == max_idx:
+            min_idx = (min_idx + 1) % len(self.fs)
+
+        max_point = self.points[max_idx]
+        min_point = self.points[min_idx]
+
+        avg_point = (max_point + min_point) / 2
+
+        new_points1 = np.copy(self.points)
+        new_points1[min_idx] = avg_point
+        
+        new_points2 = np.copy(self.points)
+        new_points2[max_idx] = avg_point
+        
+        return [
+            Simplex_PQNode(new_points1, fs, self.depth+1),
+            Simplex_PQNode(new_points2, fs, self.depth+1),
+        ]
+        
+
+# branch and bound approach
+def maximize(fs, max_depth=15):
+    N = len(fs)
+    simplex_node = Simplex_PQNode(np.identity(N), fs)
+
+    priority_queue = []
+    heapq.heappush(priority_queue, simplex_node)
+
+    biggest_value = float('-inf')
+    best_u = None
     
-    def maximize(self):
-        pass
+    while len(priority_queue) > 0:
+        node = heapq.heappop(priority_queue)
 
-def plot_objective(fs):
+        if node.upper_bound() < biggest_value:
+            continue
+        if node.depth > max_depth:
+            continue
+
+        for i, val in enumerate(node.objective_values()):
+            if val > biggest_value:
+                biggest_value = val
+                best_u = node.points[i]
+                print(f'found new best value {biggest_value} at {best_u}')
+                
+        for child in node.split():
+            heapq.heappush(priority_queue, child)
+
+    return best_u, biggest_value
+    
+def plot_objective(fs, u_opt):
     # barycentric triangle corners
 
     padding=0.1
@@ -47,7 +121,7 @@ def plot_objective(fs):
     ys = []
     zs = []
 
-    N = 200
+    N = 100
     for s1 in np.arange(N+1):
         u1 = s1 / N
         for s2 in np.arange(N-s1+1):
@@ -65,8 +139,6 @@ def plot_objective(fs):
             ys.append(y)
             zs.append(z)
 
-            
-            
     outer_tri = Triangulation(tri_xs, tri_ys)
     
     domain_tri = Triangulation(xs, ys)
@@ -81,6 +153,7 @@ def plot_objective(fs):
 
     # ax.axis('off')
     ax.triplot(outer_tri)
+    
     num_levels = 50
     min_z = np.min(zs)
     max_z = np.max(zs)
@@ -92,8 +165,11 @@ def plot_objective(fs):
                        colors=['0.25', '0.5', '0.5', '0.5', '0.5'],
                        linewidths=[1.0, 0.5, 0.5, 0.5, 0.5])
 
-    # ax.scatter(xs, ys)
+    x_opt = np.dot(tri_xs, u_opt)
+    y_opt = np.dot(tri_ys, u_opt)
 
+    ax.scatter([x_opt], [y_opt], c='red', s=100, marker='*')
+    
     plt.colorbar(tcf)
     plt.tight_layout()
     plt.show()
@@ -105,6 +181,6 @@ if __name__ == "__main__":
         lambda x: 0 if x <= 0.5 else x + 1
     ]
 
-    simplex = BarycentricSimplex(np.identity(3))
-
-    # plot_objective(fs)
+    u_opt, opt_val = maximize(fs)
+    print(f'maximum value {opt_val} found at coordinates {u_opt}')
+    plot_objective(fs, u_opt)
